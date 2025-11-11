@@ -1,69 +1,55 @@
-import base64
-import io
-import requests
-from django.shortcuts import render
-import matplotlib.pyplot as plt
 import pandas as pd
+import matplotlib
+matplotlib.use('Agg')  # Para generar gráficas sin interfaz
+import matplotlib.pyplot as plt
+import io, base64
+from django.shortcuts import render
+from scipy.io import arff
 from sklearn.model_selection import train_test_split
-
-
-
-
-def train_val_test_split(df, stratify=None, test_size=0.2, val_size=0.2):
-    """Divide un DataFrame en train, val y test, con estratificación opcional"""
-    strat = df[stratify] if stratify else None
-    train_df, temp_df = train_test_split(df, test_size=(test_size + val_size), stratify=strat)
-    strat_temp = temp_df[stratify] if stratify else None
-    val_df, test_df = train_test_split(temp_df, test_size=test_size / (test_size + val_size), stratify=strat_temp)
-    return train_df, val_df, test_df
-
 
 def index(request):
     context = {}
-
     if request.method == 'POST':
-        dataset_url = request.POST.get('dataset_url', '').strip()
+        url = request.POST.get('dataset_url')
 
         try:
-            # Leer CSV desde GitHub o URL
-            df = pd.read_csv(dataset_url)
+            # Cargar dataset desde URL .arff
+            data, meta = arff.loadarff(url)
+            df = pd.DataFrame(data)
+            df['protocol_type'] = df['protocol_type'].astype(str)
 
-            # Verificar columna 'protocol_type'
-            if 'protocol_type' not in df.columns:
-                context['error'] = "El dataset no contiene la columna 'protocol_type'."
-                return render(request, 'index.html', context)
+            # Reducir dataset al 20%
+            df = df.sample(frac=0.2, random_state=42)
+            df.to_csv('dataset_reducido.csv', index=False)
 
-            # Dividir dataset
-            train_set, val_set, test_set = train_val_test_split(df, stratify='protocol_type')
+            # División estratificada
+            train_set, temp_set = train_test_split(df, test_size=0.4, stratify=df['protocol_type'], random_state=42)
+            val_set, test_set = train_test_split(temp_set, test_size=0.5, stratify=temp_set['protocol_type'], random_state=42)
 
-            # Calcular longitudes
-            context['data_info'] = {
-                'dataset_len': len(df),
-                'train_len': len(train_set),
-                'val_len': len(val_set),
-                'test_len': len(test_set),
-            }
+            # Longitudes
+            context['len_df'] = len(df)
+            context['len_train'] = len(train_set)
+            context['len_val'] = len(val_set)
+            context['len_test'] = len(test_set)
 
-            # Función auxiliar para convertir gráficas a base64
-            def plot_to_base64(data, title):
+            # Graficar y guardar en base64
+            figs = []
+            for dataset, name in zip([df, train_set, val_set, test_set],
+                                     ['Dataset Completo (Reducido 20%)', 'Training Set', 'Validation Set', 'Test Set']):
                 fig, ax = plt.subplots()
-                data['protocol_type'].hist(ax=ax)
-                ax.set_title(title)
-                buffer = io.BytesIO()
-                plt.savefig(buffer, format='png')
-                buffer.seek(0)
-                image_png = buffer.getvalue()
-                buffer.close()
+                dataset['protocol_type'].value_counts().plot(kind='bar', ax=ax)
+                ax.set_title(name)
+                buf = io.BytesIO()
+                plt.savefig(buf, format='png')
                 plt.close(fig)
-                return base64.b64encode(image_png).decode('utf-8')
+                buf.seek(0)
+                image_base64 = base64.b64encode(buf.getvalue()).decode('utf-8')
+                figs.append(image_base64)
 
-            # Crear imágenes
-            context['df_img'] = plot_to_base64(df, 'Dataset completo')
-            context['train_img'] = plot_to_base64(train_set, 'Training Set')
-            context['val_img'] = plot_to_base64(val_set, 'Validation Set')
-            context['test_img'] = plot_to_base64(test_set, 'Test Set')
+            context['plots'] = figs
+            context['success'] = True
 
         except Exception as e:
-            context['error'] = f"Ocurrió un error al procesar el dataset: {e}"
+            context['error'] = f"Error al cargar el dataset: {e}"
 
     return render(request, 'index.html', context)
